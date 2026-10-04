@@ -1,0 +1,118 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  identity-service:
+    build: ./backend
+    command: ["node", "dist/apps/identity-service/main.js"]
+    environment:
+      JWT_SECRET: dexa-wfh-attendance-super-secret
+      JWT_EXPIRES_IN: 8h
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      IDENTITY_DB_HOST: postgres
+      IDENTITY_DB_PORT: "5432"
+      IDENTITY_DB_USER: postgres
+      IDENTITY_DB_PASSWORD: postgres
+      IDENTITY_DB_NAME: dexa_identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  attendance-service:
+    build: ./backend
+    command: ["node", "dist/apps/attendance-service/main.js"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      ATTENDANCE_DB_HOST: postgres
+      ATTENDANCE_DB_PORT: "5432"
+      ATTENDANCE_DB_USER: postgres
+      ATTENDANCE_DB_PASSWORD: postgres
+      ATTENDANCE_DB_NAME: dexa_attendance
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  audit-service:
+    build: ./backend
+    command: ["node", "dist/apps/audit-service/main.js"]
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      AUDIT_DB_HOST: postgres
+      AUDIT_DB_PORT: "5432"
+      AUDIT_DB_USER: postgres
+      AUDIT_DB_PASSWORD: postgres
+      AUDIT_DB_NAME: dexa_audit
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  gateway:
+    build: ./backend
+    command: ["node", "dist/apps/gateway/main.js"]
+    environment:
+      PORT: "3000"
+      JWT_SECRET: dexa-wfh-attendance-super-secret
+      JWT_EXPIRES_IN: 8h
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      - identity-service
+      - attendance-service
+      - audit-service
+
+  frontend-employee:
+    build:
+      context: ./frontend-employee
+      args:
+        VITE_API_BASE_URL: http://localhost:3000
+    ports:
+      - "5173:80"
+    depends_on:
+      - gateway
+
+  frontend-admin:
+    build:
+      context: ./frontend-admin
+      args:
+        VITE_API_BASE_URL: http://localhost:3000
+    ports:
+      - "5174:80"
+    depends_on:
+      - gateway
+
+volumes:
+  pgdata:
+  uploads:
